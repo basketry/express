@@ -2,6 +2,7 @@ import { format as prettier } from 'prettier';
 import {
   File,
   getTypeByName,
+  HttpMethod,
   HttpParameter,
   Interface,
   isApiKeyScheme,
@@ -21,18 +22,18 @@ import {
   buildParameterName,
   buildTypeName,
 } from '@basketry/typescript';
-import { camel } from 'case';
+import { camel, pascal } from 'case';
 
 import { header as standardWarning } from '@basketry/typescript/lib/warning';
 import { format } from '@basketry/typescript/lib/utils';
 import { buildRouterFactoryName } from './name-factory';
-import { buildMethodAuthorizerName } from '@basketry/typescript-auth';
 import { buildParamsValidatorName } from '@basketry/typescript-validators';
 import {
   hasDateConverters,
   needsDateConversion,
 } from '@basketry/typescript-validators/lib/utils';
 import { NamespacedExpressOptions } from './types';
+import { NamespacedTypescriptOptions } from '@basketry/typescript/lib/types';
 
 // function format(contents: string): string {
 //   return prettier(contents, {
@@ -57,8 +58,27 @@ export class ExpressRouterFactory {
       '\n',
     );
 
-    const utils =
+    const imports = Array.from(buildImports(this.service, this.options)).join(
+      '\n',
+    );
+
+    const tryParseDef =
       'function tryParse(obj: any): any {try{return typeof obj === "object" || Array.isArray(obj) ? obj : JSON.parse(obj);} catch {return obj;}}';
+
+    const getHttpStatusDef = `function getHttpStatus(
+          success: number,
+          result: { errors: { status: number | string }[] },
+        ): number {
+          if (result.errors.length) {
+            return result.errors.reduce((max, item) => {
+              const value =
+                typeof item.status === 'string' ? Number(item.status) : item.status;
+              return !Number.isNaN(value) && value > max ? value : max;
+            }, success);
+          } else {
+            return success;
+          }
+      }`;
 
     const contents = [
       standardWarning(
@@ -66,7 +86,9 @@ export class ExpressRouterFactory {
         require('../package.json'),
         this.options || {},
       ),
-      utils,
+      imports,
+      tryParseDef,
+      getHttpStatusDef,
       routers,
     ].join('\n\n');
 
@@ -76,9 +98,7 @@ export class ExpressRouterFactory {
         require('../package.json'),
         this.options || {},
       ),
-      `import { AuthService } from '${
-        this.options?.express?.authImportPath ?? './auth'
-      }';`,
+
       `declare global { namespace Express { interface Request { basketry?: { context: AuthService; }}}}`,
     ].join('\n\n');
 
@@ -95,56 +115,56 @@ export class ExpressRouterFactory {
   }
 }
 
-function* buildStrategyInterface(methods: Method[]): Iterable<string> {
-  const schemeTypesByName = methods
-    .map((method) => method.security)
-    .reduce((a, b) => a.concat(b), [])
-    .reduce((a, b) => a.concat(b), [])
-    .reduce(
-      (map, scheme) => map.set(scheme.name.value, scheme.type),
-      new Map<string, SecurityScheme['type']>(),
-    );
+// function* buildStrategyInterface(methods: Method[]): Iterable<string> {
+//   const schemeTypesByName = methods
+//     .map((method) => method.security)
+//     .reduce((a, b) => a.concat(b), [])
+//     .reduce((a, b) => a.concat(b), [])
+//     .reduce(
+//       (map, scheme) => map.set(scheme.name.value, scheme.type),
+//       new Map<string, SecurityScheme['type']>(),
+//     );
 
-  yield 'export interface Strategies {';
-  for (const [name, type] of schemeTypesByName) {
-    switch (type.value) {
-      case 'basic':
-        yield `  '${name}': BasicStrategy`;
-        break;
-      case 'apiKey':
-        yield `  '${name}': ApiKeyStrategy`;
-        break;
-      case 'oauth2':
-        yield `  '${name}': OAuth2Strategy`;
-        break;
-    }
-  }
-  yield '}';
-}
+//   yield 'export interface Strategies {';
+//   for (const [name, type] of schemeTypesByName) {
+//     switch (type.value) {
+//       case 'basic':
+//         yield `  '${name}': BasicStrategy`;
+//         break;
+//       case 'apiKey':
+//         yield `  '${name}': ApiKeyStrategy`;
+//         break;
+//       case 'oauth2':
+//         yield `  '${name}': OAuth2Strategy`;
+//         break;
+//     }
+//   }
+//   yield '}';
+// }
 
-function buildAuthTypes(): string {
-  return `export type BasicStrategy = (username: string | null | undefined, password: string | null | undefined) => Promise<{ isAuthenticated: boolean; scopes: Set<string> }>;
-  
-  export type ApiKeyStrategy = (key: string | null | undefined) => Promise<{ isAuthenticated: boolean; scopes: Set<string> }>;
-  
-  export type OAuth2Strategy = (accessToken: string | null | undefined) => Promise<{ isAuthenticated: boolean; scopes: Set<string> }>;
-  
-  class ExpressAuthService implements auth.AuthService {
-    constructor(
-      private readonly results: Record<
-        string,
-        { isAuthenticated: boolean; scopes?: Set<string> }
-      >,
-    ) {}
-  
-    isAuthenticated(scheme: string): boolean {
-      return this.results[scheme]?.isAuthenticated === true;
-    }
-    hasScope(scheme: string, scope: string): boolean {
-      return this.results[scheme]?.scopes?.has(scope) === true;
-    }
-  }`;
-}
+// function buildAuthTypes(): string {
+//   return `export type BasicStrategy = (username: string | null | undefined, password: string | null | undefined) => Promise<{ isAuthenticated: boolean; scopes: Set<string> }>;
+
+//   export type ApiKeyStrategy = (key: string | null | undefined) => Promise<{ isAuthenticated: boolean; scopes: Set<string> }>;
+
+//   export type OAuth2Strategy = (accessToken: string | null | undefined) => Promise<{ isAuthenticated: boolean; scopes: Set<string> }>;
+
+//   class ExpressAuthService implements auth.AuthService {
+//     constructor(
+//       private readonly results: Record<
+//         string,
+//         { isAuthenticated: boolean; scopes?: Set<string> }
+//       >,
+//     ) {}
+
+//     isAuthenticated(scheme: string): boolean {
+//       return this.results[scheme]?.isAuthenticated === true;
+//     }
+//     hasScope(scheme: string, scope: string): boolean {
+//       return this.results[scheme]?.scopes?.has(scope) === true;
+//     }
+//   }`;
+// }
 
 function buildStandardError(): string {
   return `/** Standard error (based on JSON API Error: https://jsonapi.org/format/#errors) */
@@ -163,32 +183,7 @@ function buildStandardError(): string {
 }
 
 function buildErrorFactories(): string {
-  return `function build401(detail?: string): StandardError {
-    const error: StandardError = {
-      status: 401,
-      code: 'UNAUTHORIZED',
-      title:
-        'The client request has not been completed because it lacks valid authentication credentials for the requested resource.',
-    };
-
-    if(typeof detail === 'string') error.detail = detail;
-
-    return error;
-  }
-  
-  export function build403(detail?: string): StandardError {
-    const error: StandardError = {
-      status: 403,
-      code: 'FORBIDDEN',
-      title: 'The server understands the request but refuses to authorize it.',
-    };
-
-    if(typeof detail === 'string') error.detail = detail;
-
-    return error;
-  }
-
-  function build400(detail?: string): StandardError {
+  return `function build400(detail?: string): StandardError {
     const error: StandardError = {
       status: 400,
       code: 'BAD_REQUEST',
@@ -215,68 +210,61 @@ function buildErrorFactories(): string {
   }`;
 }
 
-function* buildMiddleware(methods: Method[]): Iterable<string> {
-  const schemes = methods
-    .map((method) => method.security)
-    .reduce((a, b) => a.concat(b), [])
-    .reduce((a, b) => a.concat(b), [])
-    .reduce(
-      (map, scheme) => map.set(scheme.name.value, scheme),
-      new Map<string, SecurityScheme>(),
-    );
+// function* buildMiddleware(methods: Method[]): Iterable<string> {
+//   const schemes = methods
+//     .map((method) => method.security)
+//     .reduce((a, b) => a.concat(b), [])
+//     .reduce((a, b) => a.concat(b), [])
+//     .reduce(
+//       (map, scheme) => map.set(scheme.name.value, scheme),
+//       new Map<string, SecurityScheme>(),
+//     );
 
-  yield `export const authentication: (strategies: Strategies) => RequestHandler = (strategies) => (req, _res, next) => {`;
+//   yield `export const authentication: (strategies: Strategies) => RequestHandler = (strategies) => (req, _res, next) => {`;
 
-  const allSchemes = Array.from(schemes.values());
+//   const allSchemes = Array.from(schemes.values());
 
-  if (allSchemes.some(isOAuth2Scheme)) {
-    yield `const [a, b] = req.headers.authorization?.split(' ') || [];`;
-    yield `const accessToken = a === 'Bearer' ? b : undefined;`;
-  }
+//   if (allSchemes.some(isOAuth2Scheme)) {
+//     yield `const [a, b] = req.headers.authorization?.split(' ') || [];`;
+//     yield `const accessToken = a === 'Bearer' ? b : undefined;`;
+//   }
 
-  if (allSchemes.some(isBasicScheme)) {
-    yield `const { username, password } = new URL(req.url);`;
-  }
+//   if (allSchemes.some(isBasicScheme)) {
+//     yield `const { username, password } = new URL(req.url);`;
+//   }
 
-  yield `Promise.all([`;
+//   yield `Promise.all([`;
 
-  for (const [name, scheme] of schemes) {
-    if (isBasicScheme(scheme)) {
-      yield `strategies['${name}'](username, password),`;
-    } else if (isApiKeyScheme(scheme)) {
-      yield `strategies['${name}'](req.get('${scheme.parameter.value}')), // TODO: also support query and cookie`;
-    } else if (isOAuth2Scheme(scheme)) {
-      yield `strategies['${name}'](accessToken),`;
-    }
-  }
+//   for (const [name, scheme] of schemes) {
+//     if (isBasicScheme(scheme)) {
+//       yield `strategies['${name}'](username, password),`;
+//     } else if (isApiKeyScheme(scheme)) {
+//       yield `strategies['${name}'](req.get('${scheme.parameter.value}')), // TODO: also support query and cookie`;
+//     } else if (isOAuth2Scheme(scheme)) {
+//       yield `strategies['${name}'](accessToken),`;
+//     }
+//   }
 
-  yield `]).then(results => {`;
-  yield `  req.basketry = { context: new ExpressAuthService({`;
-  yield allSchemes
-    .map((scheme, i) => {
-      return `    '${scheme.name.value}': results[${i}]`;
-    })
-    .join(',');
-  yield `  }) }`;
-  yield `  next();`;
-  yield `}).catch(error => next(error))`;
+//   yield `]).then(results => {`;
+//   yield `  req.basketry = { context: new ExpressAuthService({`;
+//   yield allSchemes
+//     .map((scheme, i) => {
+//       return `    '${scheme.name.value}': results[${i}]`;
+//     })
+//     .join(',');
+//   yield `  }) }`;
+//   yield `  next();`;
+//   yield `}).catch(error => next(error))`;
 
-  yield '}';
-}
+//   yield '}';
+// }
 
-function* buildRouters(
+function* buildImports(
   service: Service,
   options: NamespacedExpressOptions | undefined,
 ): Iterable<string> {
-  const methods = service.interfaces
-    .map((i) => i.methods)
-    .reduce((a, b) => a.concat(b), []);
-
   yield `import { type NextFunction, type Request, type RequestHandler, type Response, Router } from 'express';`;
-  yield `import { URL } from 'url';`;
-  yield `import * as auth from '${
-    options?.express?.authImportPath ?? './auth'
-  }';`;
+
   yield `import * as types from '${
     options?.express?.typesImportPath ?? './types'
   }';`;
@@ -288,13 +276,12 @@ function* buildRouters(
       options?.express?.dateUtilsImportPath ?? './date-utils'
     }';`;
   }
-  yield '';
-  yield buildAuthTypes();
-  yield '';
-  yield* buildStrategyInterface(methods);
-  yield '';
-  yield* buildMiddleware(methods);
-  yield '';
+}
+
+function* buildRouters(
+  service: Service,
+  options: NamespacedExpressOptions | undefined,
+): Iterable<string> {
   yield buildStandardError();
   yield '';
   yield buildErrorFactories();
@@ -304,6 +291,10 @@ function* buildRouters(
   for (const int of service.interfaces) {
     yield* buildRouter(service, int);
   }
+  yield '';
+  yield* buildRouterV2(service, options);
+  yield '';
+  yield* buildRouteTable(service);
 }
 
 function* buildDocsRouter(): Iterable<string> {
@@ -347,13 +338,126 @@ function* buildDocsRouter(): Iterable<string> {
   yield '}';
 }
 
+function* buildHandler(
+  service: Service,
+  int: Interface,
+  method: Method,
+  httpMethod: HttpMethod,
+): Iterable<string> {
+  const paramString = httpMethod.parameters.length ? 'params' : '';
+  yield 'async (req, res, next) => {';
+  yield `      try {`;
+
+  if (httpMethod.parameters.length) {
+    yield `      const params = {`;
+    for (const httpParam of httpMethod.parameters) {
+      const param = method.parameters.find(
+        (p) => p.name.value === httpParam.name.value,
+      );
+      if (!param) continue;
+
+      yield* buildParam(service, param, httpParam);
+    }
+    yield `      };`;
+  }
+
+  if (method.parameters.length) {
+    const validatorName = buildParamsValidatorName(method, 'validators');
+    yield '';
+    yield `        const errors = ${validatorName}(${paramString});`;
+    yield `        if (errors.length) { return next(errors.map(error => build400(error.title))); }`;
+  }
+
+  yield '';
+  yield `        // TODO: validate return value`;
+  yield `        // TODO: consider response headers`;
+  yield `  const service = services.${camel(int.name.value)}Service;`;
+  yield `  const svc = typeof service === 'function' ? service(req) : service`;
+
+  if (method.returnType) {
+    yield `        const result = await svc.${buildMethodName(
+      method,
+    )}(${paramString});`;
+    yield `        res.status(getHttpStatus(${httpMethod.successCode.value},result)).json(result);`;
+    yield `        if(result.errors.length) next(result.errors);`;
+    yield `        return;`;
+  } else {
+    yield `        await svc.${buildMethodName(method)}(${paramString});`;
+    yield `        return res.status(204).send();`;
+  }
+
+  yield `      } catch (ex) {`;
+  yield `        if(typeof ex === 'string') {`;
+  yield `           return next(build500(ex));`;
+  yield `        }`;
+  yield `        if(typeof ex.message === 'string') {`;
+  yield `           return next(build500(ex.message));`;
+  yield `        }`;
+  yield `        return next(build500(ex.toString()));`;
+  yield `      }`;
+  yield '}';
+}
+
+function* buildRouterV2(
+  service: Service,
+  options: NamespacedTypescriptOptions | undefined,
+): Iterable<string> {
+  const serviceNames = service.interfaces.map((int) => int.name.value);
+  yield `export type ServiceFactory<T> = T | ((req: Request) => T);`;
+  yield `export type ServiceMap = {`;
+  for (const name of serviceNames.sort()) {
+    const n = `${name}_service`;
+    const t = `${options?.typescript?.typeImports ?? 'types'}.${pascal(n)}`;
+    yield `  ${camel(n)}: ServiceFactory<${t}>,`;
+  }
+  yield `};`;
+  yield '';
+
+  yield `const routerV2 = (services: ServiceMap): RequestHandler =>`;
+  yield `(req, res, next) => {`;
+  yield `}`;
+}
+
+function* buildRouteTable(service: Service): Iterable<string> {
+  yield `export type RouteTable = typeof routeTable;`;
+  yield '';
+  yield `export const routeTable = {`;
+  for (const int of service.interfaces) {
+    const interfaceName = buildInterfaceName(int, 'types');
+    for (const httpPath of int.protocols.http) {
+      let expressPath = httpPath.path.value;
+      try {
+        while (expressPath.indexOf('{') > -1) {
+          expressPath = expressPath.replace('{', ':').replace('}', '');
+        }
+      } catch (ex) {
+        console.error(ex);
+      }
+      for (const httpMethod of httpPath.methods) {
+        const method = int.methods.find(
+          (m) => m.name.value === httpMethod.name.value,
+        );
+        if (!method) continue;
+
+        yield `'${camel(method.name.value)}': {`;
+        yield `  route: '${expressPath}' as const,`;
+        yield `  method: '${httpMethod.verb.value.toLocaleLowerCase()}' as const,`;
+        yield `  handler: (services: ServiceMap): RequestHandler => `;
+        yield* buildHandler(service, int, method, httpMethod);
+        yield ',';
+        yield '} as const,';
+      }
+    }
+  }
+  yield '} as const ';
+}
+
 function* buildRouter(service: Service, int: Interface): Iterable<string> {
   const interfaceName = buildInterfaceName(int, 'types');
   yield `export function ${buildRouterFactoryName(
     int,
   )}(service: ${interfaceName} | ((req: Request) => ${interfaceName}), router?: Router) {`;
   yield '  const r = router || Router();';
-  yield `  const contextProvider = (req: Request) => req.basketry?.context;`;
   yield '';
 
   for (const httpPath of int.protocols.http) {
@@ -381,72 +485,17 @@ function* buildRouter(service: Service, int: Interface): Iterable<string> {
       );
       if (!method) continue;
 
-      const paramString = httpMethod.parameters.length ? 'params' : '';
-      const methodAuthorizerName = buildMethodAuthorizerName(method, 'auth');
-
-      yield `    .${httpMethod.verb.value.toLocaleLowerCase()}(async (req, res, next) => {`;
-      yield `      try {`;
-      yield `        // TODO: generate more specific messages`;
-      yield `        switch (${methodAuthorizerName}(contextProvider(req))) {`;
-      yield `          case 'unauthenticated':`;
-      yield `            return next(build401('No authentication scheme supplied for ${method.name.value}.'));`;
-      yield `          case 'unauthorized':`;
-      yield `            return next(build403('The authenticated principal does not have the necessary scopes to call ${method.name.value}.'));`;
-      yield `          }`;
-      yield '';
-
-      if (httpMethod.parameters.length) {
-        yield `      const params = {`;
-        for (const httpParam of httpMethod.parameters) {
-          const param = method.parameters.find(
-            (p) => p.name.value === httpParam.name.value,
-          );
-          if (!param) continue;
-
-          yield* buildParam(service, param, httpParam);
-        }
-        yield `      };`;
-      }
-
-      if (method.parameters.length) {
-        const validatorName = buildParamsValidatorName(method, 'validators');
-        yield '';
-        yield `        const errors = ${validatorName}(${paramString});`;
-        yield `        if (errors.length) { return next(errors.map(error => build400(error.title))); }`;
-      }
-
-      yield '';
-      yield `        // TODO: validate return value`;
-      yield `        // TODO: consider response headers`;
-      yield `  const svc = typeof service === 'function' ? service(req) : service`;
-
-      if (method.returnType) {
-        yield `        return res.status(${
-          httpMethod.successCode.value
-        }).json(await svc.${buildMethodName(method)}(${paramString}));`;
-      } else {
-        yield `        await svc.${buildMethodName(method)}(${paramString});`;
-        yield `        return res.status(204).send();`;
-      }
-
-      yield `      } catch (ex) {`;
-      yield `        if(typeof ex === 'string') {`;
-      yield `           return next(build500(ex));`;
-      yield `        }`;
-      yield `        if(typeof ex.message === 'string') {`;
-      yield `           return next(build500(ex.message));`;
-      yield `        }`;
-      yield `        return next(build500(ex.toString()));`;
-      yield `      }`;
-      yield `    })`;
+      yield `.${httpMethod.verb.value.toLocaleLowerCase()}(`;
+      yield* buildHandler(service, int, method, httpMethod);
+      yield `)`;
     }
 
-    yield `.options((req, res)=>{`;
+    yield `.options((_, res)=>{`;
     yield `   res.set({allow: '${Array.from(allow).join(', ')}'});`;
     yield `   return res.status(204).send();`;
     yield `})`;
 
-    yield `.all((req, res)=>{`;
+    yield `.all((_, res)=>{`;
     yield `   res.set({allow: '${Array.from(allow).join(', ')}'});`;
     yield `   return res.status(405).send();`;
     yield `});`;
@@ -601,3 +650,43 @@ function buildSource(httpParam: HttpParameter): string {
         : `req.query['${httpParam.name.value}']`;
   }
 }
+
+/*
+scratch
+
+import { Request, RequestHandler } from 'express';
+import { RouteTable, ServiceMap, routeTable } from './express-routers';
+
+let publicRoutes: Partial<RouteTable>;
+let authenicatedRoutes: Partial<RouteTable>;
+export const router =
+  (
+    services: ServiceMap,
+    isAuthenticated: (req: Request) => boolean,
+    publicMethods: (keyof RouteTable)[],
+  ): RequestHandler =>
+  (req, res, next) => {
+    const publicMethodNames = new Set<string>(publicMethods);
+    const isPublic = !isAuthenticated(req);
+
+    const currentRouteTable: Partial<RouteTable> = Object.entries(
+      routeTable,
+    ).reduce((acc, [key, value]) => {
+      if (isPublic && publicMethodNames.has(key)) {
+        return {};
+      } else if (!isPublic && !publicMethodNames.has(key)) {
+        return {};
+      } else return acc;
+    }, {} as Partial<RouteTable>);
+
+    handleRoutes(services, currentRouteTable)(req, res, next);
+  };
+
+const handleRoutes =
+  (services: ServiceMap, routes: Partial<RouteTable>): RequestHandler =>
+  (req, res, next) => {
+    for (const [a, b] of Object.entries(routes)) {
+    }
+  };
+
+*/

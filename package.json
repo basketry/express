@@ -52,7 +52,6 @@
   },
   "dependencies": {
     "@basketry/typescript": "^0.1.0-rc.0",
-    "@basketry/typescript-auth": "^0.1.0-rc.0",
     "@basketry/typescript-validators": "^0.1.0-rc.3",
     "basketry": "^0.1.0-rc.5",
     "case": "^1.6.3",
