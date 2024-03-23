@@ -1,6 +1,7 @@
 import { format as prettier } from 'prettier';
 import {
   File,
+  getTypeByName,
   HttpParameter,
   Interface,
   isApiKeyScheme,
@@ -9,56 +10,112 @@ import {
   isOAuth2Scheme,
   isRequired,
   Method,
+  NamespacedBasketryOptions,
   Parameter,
   SecurityScheme,
   Service,
 } from 'basketry';
-import { warning } from './warning';
 import {
+  buildFilePath,
   buildInterfaceName,
   buildMethodName,
   buildParameterName,
   buildTypeName,
 } from '@basketry/typescript';
+import { camel } from 'case';
+
+import { header as standardWarning } from '@basketry/typescript/lib/warning';
+import { format } from '@basketry/typescript/lib/utils';
 import { buildRouterFactoryName } from './name-factory';
 import { buildMethodAuthorizerName } from '@basketry/typescript-auth';
 import { buildParamsValidatorName } from '@basketry/typescript-validators';
+import {
+  hasDateConverters,
+  needsDateConversion,
+} from '@basketry/typescript-validators/lib/utils';
+import { NamespacedExpressOptions } from './types';
 
-function format(contents: string): string {
-  return prettier(contents, {
-    singleQuote: true,
-    useTabs: false,
-    tabWidth: 2,
-    trailingComma: 'all',
-    parser: 'typescript',
-  });
-}
+// function format(contents: string): string {
+//   return prettier(contents, {
+//     singleQuote: true,
+//     useTabs: false,
+//     tabWidth: 2,
+//     trailingComma: 'all',
+//     parser: 'typescript',
+//   });
+// }
+
+const tryParseDef =
+  'function tryParse(obj: any): any {try{return typeof obj === "object" || Array.isArray(obj) ? obj : JSON.parse(obj);} catch {return obj;}}';
+
+let needsGetHttpStatusDef = false;
+const getHttpStatusDef = `function getHttpStatus(
+  success: number,
+  result: { errors: { status?: number | string }[] },
+): number {
+  if (result.errors.length) {
+    return result.errors.reduce((max, item) => {
+      if (typeof item.status === 'undefined') return success;
+      const value =
+        typeof item.status === 'string' ? Number(item.status) : item.status;
+      return !Number.isNaN(value) && value > max ? value : max;
+    }, success);
+  } else {
+    return success;
+  }
+}`;
 
 export class ExpressRouterFactory {
   public readonly target = 'typescript';
 
-  build(service: Service): File[] {
-    const routers = Array.from(buildRouters(service)).join('\n');
+  constructor(
+    private readonly service: Service,
+    private readonly options?: NamespacedExpressOptions,
+  ) {}
 
-    const utils =
-      'function tryParse(obj: any): any {try{return typeof obj === "object" || Array.isArray(obj) ? obj : JSON.parse(obj);} catch {return obj;}}';
+  build(): File[] {
+    needsGetHttpStatusDef = false;
+    const routers = Array.from(buildRouters(this.service, this.options)).join(
+      '\n',
+    );
 
-    const contents = [warning, utils, routers].join('\n\n');
+    const components = [
+      standardWarning(
+        this.service,
+        require('../package.json'),
+        this.options || {},
+      ),
+      tryParseDef,
+    ];
+
+    if (needsGetHttpStatusDef) {
+      components.push(getHttpStatusDef);
+    }
+
+    components.push(routers);
+
+    const contents = components.join('\n\n');
 
     const shim = [
-      warning,
-      `import { AuthService } from './auth';`,
+      standardWarning(
+        this.service,
+        require('../package.json'),
+        this.options || {},
+      ),
+      `import { AuthService } from '${
+        this.options?.express?.authImportPath ?? './auth'
+      }';`,
       `declare global { namespace Express { interface Request { basketry?: { context: AuthService; }}}}`,
     ].join('\n\n');
 
     return [
       {
-        path: [`v${service.majorVersion.value}`, 'express-routers.ts'],
-        contents: format(contents),
+        path: buildFilePath(['express-routers.ts'], this.service, this.options),
+        contents: format(contents, this.options),
       },
       {
-        path: [`v${service.majorVersion.value}`, 'express.d.ts'],
-        contents: format(shim),
+        path: buildFilePath(['express.d.ts'], this.service, this.options),
+        contents: format(shim, this.options),
       },
     ];
   }
@@ -233,16 +290,30 @@ function* buildMiddleware(methods: Method[]): Iterable<string> {
   yield '}';
 }
 
-function* buildRouters(service: Service): Iterable<string> {
+function* buildRouters(
+  service: Service,
+  options: NamespacedExpressOptions | undefined,
+): Iterable<string> {
   const methods = service.interfaces
     .map((i) => i.methods)
     .reduce((a, b) => a.concat(b), []);
 
   yield `import { type NextFunction, type Request, type RequestHandler, type Response, Router } from 'express';`;
   yield `import { URL } from 'url';`;
-  yield `import * as auth from './auth';`;
-  yield `import * as types from './types';`;
-  yield `import * as validators from './validators';`;
+  yield `import * as auth from '${
+    options?.express?.authImportPath ?? './auth'
+  }';`;
+  yield `import * as types from '${
+    options?.express?.typesImportPath ?? './types'
+  }';`;
+  yield `import * as validators from '${
+    options?.express?.validatorsImportPath ?? './validators'
+  }';`;
+  if (hasDateConverters(service, service.types)) {
+    yield `import * as dateUtils from '${
+      options?.express?.dateUtilsImportPath ?? './date-utils'
+    }';`;
+  }
   yield '';
   yield buildAuthTypes();
   yield '';
@@ -254,12 +325,55 @@ function* buildRouters(service: Service): Iterable<string> {
   yield '';
   yield buildErrorFactories();
   yield '';
+  yield* buildDocsRouter();
+  yield '';
   for (const int of service.interfaces) {
-    yield* buildRouter(int);
+    yield* buildRouter(service, int);
   }
 }
 
-function* buildRouter(int: Interface): Iterable<string> {
+function* buildDocsRouter(): Iterable<string> {
+  yield 'export function swaggerDocsRouter(schema: any) {';
+  yield 'const r = Router();';
+  yield 'r.route("/").get((_, res) => {';
+  yield 'const swaggerUiUrl = "https://unpkg.com/swagger-ui-dist@3.51.1/";';
+  yield `res.send(\`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Swagger UI</title>
+        <link rel="stylesheet" type="text/css" href="\${swaggerUiUrl}swagger-ui.css">
+        <script src="\${swaggerUiUrl}swagger-ui-bundle.js"></script>
+        <script src="\${swaggerUiUrl}swagger-ui-standalone-preset.js"></script>
+      </head>
+      <body>
+        <div id="swagger-ui">CONTENT NOT LOADED</div>
+        <script>
+          const spec = \${JSON.stringify(schema)};
+          const ui = SwaggerUIBundle({
+            deepLinking: false,
+            spec,
+            dom_id: '#swagger-ui',
+            presets: [SwaggerUIBundle.presets.apis],
+            layout: 'BaseLayout',
+            requestInterceptor: (request) => {
+              const currentUrl = new URL(window.location.href);
+              const requestUrl = new URL(request.url);
+              const newUrl = currentUrl.href + requestUrl.href.substring(requestUrl.origin.length)
+              request.url = newUrl;
+              return request;
+            }
+          });
+        </script>
+      </body>
+    </html>
+  \`);`;
+  yield '})';
+  yield 'return r;';
+  yield '}';
+}
+
+function* buildRouter(service: Service, int: Interface): Iterable<string> {
   const interfaceName = buildInterfaceName(int, 'types');
   yield `export function ${buildRouterFactoryName(
     int,
@@ -315,7 +429,7 @@ function* buildRouter(int: Interface): Iterable<string> {
           );
           if (!param) continue;
 
-          yield* buildParam(param, httpParam);
+          yield* buildParam(service, param, httpParam);
         }
         yield `      };`;
       }
@@ -333,9 +447,27 @@ function* buildRouter(int: Interface): Iterable<string> {
       yield `  const svc = typeof service === 'function' ? service(req) : service`;
 
       if (method.returnType) {
-        yield `        return res.status(${
-          httpMethod.successCode.value
-        }).json(await svc.${buildMethodName(method)}(${paramString}));`;
+        const returnType = getTypeByName(
+          service,
+          method.returnType.typeName.value,
+        );
+
+        if (
+          returnType &&
+          returnType.properties.some(
+            (p) => p.name.value === 'errors' && p.isArray,
+          )
+        ) {
+          needsGetHttpStatusDef = true;
+          yield `const result = await svc.${buildMethodName(
+            method,
+          )}(${paramString});`;
+          yield ` return res.status(getHttpStatus(${httpMethod.successCode.value}, result)).json(result);`;
+        } else {
+          yield ` return res.status(${
+            httpMethod.successCode.value
+          }).json(await svc.${buildMethodName(method)}(${paramString}));`;
+        }
       } else {
         yield `        await svc.${buildMethodName(method)}(${paramString});`;
         yield `        return res.status(204).send();`;
@@ -404,6 +536,7 @@ function buildArraySeprarator(httpParam: HttpParameter): string | undefined {
 }
 
 function* buildParam(
+  service: Service,
   param: Parameter,
   httpParam: HttpParameter,
 ): Iterable<string> {
@@ -419,6 +552,7 @@ function* buildParam(
           buildArraySeprarator(httpParam) || ','
         }') as ${buildTypeName(param, 'types')} : (${source} as never),`;
       } else {
+        // TODO: Dates
         yield `'${paramName}': tryParse(${source}),`;
       }
     } else {
@@ -452,7 +586,14 @@ function* buildParam(
       if (isEnum(param)) {
         yield `'${paramName}': ${source} as ${buildTypeName(param, 'types')},`;
       } else {
-        yield `'${paramName}': tryParse(${source}),`;
+        const subtype = getTypeByName(service, param.typeName.value);
+        if (subtype && needsDateConversion(service, subtype)) {
+          yield `'${paramName}': dateUtils.${camel(
+            `convert_${subtype.name.value}_dates`,
+          )}(${source}),`;
+        } else {
+          yield `'${paramName}': tryParse(${source}),`;
+        }
       }
     } else {
       switch (param.typeName.value) {

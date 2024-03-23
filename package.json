@@ -1,6 +1,6 @@
 {
   "name": "@basketry/express",
-  "version": "0.0.9",
+  "version": "0.1.0-rc.5",
   "description": "Basketry generator for generating Express JS routers",
   "main": "./lib/index.js",
   "scripts": {
@@ -24,6 +24,15 @@
   "keywords": [],
   "author": "",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/basketry/express.git"
+  },
+  "bugs": {
+    "url": "https://github.com/basketry/express/issues"
+  },
+  "homepage": "https://github.com/basketry/express/wiki",
+  "funding": "https://github.com/basketry/express?sponsor=1",
   "devDependencies": {
     "@types/express": "^4.17.13",
     "@types/jest": "^27.4.0",
@@ -42,10 +51,10 @@
     "typescript": "^4.5.5"
   },
   "dependencies": {
-    "@basketry/typescript": "^0.0.13",
-    "@basketry/typescript-auth": "^0.0.7",
-    "@basketry/typescript-validators": "^0.0.9",
-    "basketry": "^0.0.28",
+    "@basketry/typescript": "^0.1.0-rc.2",
+    "@basketry/typescript-auth": "^0.1.0-rc.1",
+    "@basketry/typescript-validators": "^0.1.0-rc.7",
+    "basketry": "^0.1.0-rc.5",
     "case": "^1.6.3",
     "prettier": "^2.5.1"
   }
