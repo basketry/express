@@ -78,11 +78,11 @@ export class ExpressMapperFactory extends BaseFactory {
   ): Iterable<string> {
     const paramName = mode === 'input' ? 'dto' : 'obj';
     yield `${this.buildSignature(type.name.value, paramName, mode)} {`;
-    yield `return {`;
+    yield `return compact({`;
     for (const prop of type.properties) {
       yield* this.buildProperty(prop, paramName, mode);
     }
-    yield `};`;
+    yield `});`;
     yield `}`;
     yield '';
   }
